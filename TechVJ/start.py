@@ -61,29 +61,22 @@ async def send_help(client: Client, message: Message):
 @Client.on_message(filters.command(["cancel"]))
 async def send_cancel(client: Client, message: Message):
     BatchStatus.IS_BATCH[message.from_user.id] = True
-    # Clear any batch IDs for this user
     if str(message.from_user.id) in batch_ids:
         batch_ids.remove(str(message.from_user.id))
     await client.send_message(chat_id=message.chat.id, text="**Batch Successfully Cancelled.**")
 
 @Client.on_message(filters.command(["batch"]))
 async def batch_handler(client: Client, message: Message):
-    """
-    Enhanced batch handler that supports better throttling and progress tracking
-    """
     user_id = message.from_user.id
     
-    # Check if user already has a batch running
     if str(user_id) in batch_ids:
         return await message.reply("**You've already started one batch, wait for it to complete!**")
     
-    # Check if user has logged in
     user_data = await db.get_session(user_id)
     if user_data is None:
         await message.reply("**Please /login first.**")
         return
     
-    # Get the message link from user
     link_msg = await client.ask(
         chat_id=message.chat.id,
         text="**Send me the message link you want to start saving from.**",
@@ -97,7 +90,6 @@ async def batch_handler(client: Client, message: Message):
     if "https://t.me/" not in link:
         return await message.reply("**Invalid link format. Please send a valid Telegram message link.**")
     
-    # Get the number of messages to process
     range_msg = await client.ask(
         chat_id=message.chat.id,
         text="**Send me the number of files/range you want to save from the given message.**",
@@ -114,17 +106,14 @@ async def batch_handler(client: Client, message: Message):
     except ValueError:
         return await message.reply("**Range must be an integer!**")
     
-    # Add user to batch process
     batch_ids.append(str(user_id))
     BatchStatus.IS_BATCH[user_id] = False
     
-    # Send initial progress message
     progress_msg = await message.reply(
         "**Batch process ongoing.**\n\n"
         "Process completed: 0"
     )
     
-    # Start batch processing
     try:
         msg_id = 0
         try:
@@ -139,47 +128,36 @@ async def batch_handler(client: Client, message: Message):
                 batch_ids.remove(str(user_id))
                 return
                 
-        # Process the batch of messages
         async with Client("saverestricted", session_string=user_data, api_hash=API_HASH, api_id=API_ID) as acc:
-            for i in range(value):
-                if BatchStatus.IS_BATCH.get(user_id, True):  # If cancelled
+            processed = 0
+            while processed < value:
+                if BatchStatus.IS_BATCH.get(user_id, True):
                     break
                 
-                # Determine sleep timer based on message count
                 timer = 2
-                if i >= 250:
+                if processed >= 250:
                     timer = 3
-                if i >= 1000:
+                if processed >= 1000:
                     timer = 4
-                if i >= 10000:
+                if processed >= 10000:
                     timer = 5
-                if i >= 50000:
+                if processed >= 50000:
                     timer = 6
-                if i >= 100000:
+                if processed >= 100000:
                     timer = 8
                 
-                # Reduce timer for public channels
                 if 't.me/c/' not in link:
-                    timer = 1 if i < 500 else 2
+                    timer = 1 if processed < 500 else 2
                 
                 try:
-                    # Update progress message
                     await progress_msg.edit(
                         f"**Batch process ongoing.**\n\n"
-                        f"Process completed: {i+1}/{value}"
+                        f"Process completed: {processed+1}/{value}"
                     )
                     
-                    # Calculate message ID to fetch
-                    msg_to_fetch = msg_id + i
-                    
-                    # Process the message
+                    msg_to_fetch = msg_id + processed
                     await process_message(client, acc, message, link, msg_to_fetch)
-                    
-                    # Sleep to avoid rate limiting
-                    await client.send_message(
-                        user_id, 
-                        f"**Sleeping for {timer} seconds to avoid Floodwaits and protect account!**"
-                    )
+                    processed += 1
                     await asyncio.sleep(timer)
                     
                 except FloodWait as fw:
@@ -190,23 +168,18 @@ async def batch_handler(client: Client, message: Message):
                         )
                         break
                     else:
-                        fw_alert = await client.send_message(
-                            user_id,
-                            f"**Sleeping for {fw.value + 5} seconds due to telegram floodwait.**"
-                        )
                         await asyncio.sleep(fw.value + 5)
-                        await fw_alert.delete()
                 except Exception as e:
                     logger.error(f"Error processing message {msg_to_fetch}: {e}")
                     await client.send_message(
                         user_id,
                         f"**An error occurred during cloning, batch will continue.**\n\n**Error:** {str(e)}"
                     )
+                    continue
             
-            # Batch completed
             await progress_msg.edit(
                 f"**Batch process completed.**\n\n"
-                f"Successfully processed: {min(i+1, value)}/{value}"
+                f"Successfully processed: {processed}/{value}"
             )
             await client.send_message(user_id, "**Batch successfully completed!**")
             
@@ -214,15 +187,12 @@ async def batch_handler(client: Client, message: Message):
         logger.error(f"Batch process error: {e}")
         await progress_msg.edit(f"**Batch process failed.**\n\n**Error:** {str(e)}")
     finally:
-        # Clean up
         BatchStatus.IS_BATCH[user_id] = True
         if str(user_id) in batch_ids:
             batch_ids.remove(str(user_id))
 
 async def process_message(client, acc, message, link, msg_id):
-    """Process a single message from the batch"""
     try:
-        # Determine if it's a private channel or public
         if "https://t.me/c/" in link:
             chat_id = int("-100" + link.split("/")[4])
             await handle_private(client, acc, message, chat_id, msg_id)
@@ -288,7 +258,7 @@ async def save(client: Client, message: Message):
                 break
 
             await process_message(client, acc, message, cleaned_text, msg_id)
-            await asyncio.sleep(1)  # Add a delay to avoid rate limiting
+            await asyncio.sleep(1)
 
     BatchStatus.IS_BATCH[message.from_user.id] = True
 
